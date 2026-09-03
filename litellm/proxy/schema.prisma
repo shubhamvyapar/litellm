@@ -762,7 +762,7 @@ model LiteLLM_DailyUserSpend {
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
 
-  @@unique([user_id, date, api_key, model, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
+  @@unique([user_id, date, api_key, model, model_group, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
   @@index([date])
   @@index([user_id, date])
   @@index([api_key])
@@ -797,7 +797,7 @@ model LiteLLM_DailyOrganizationSpend {
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
 
-  @@unique([organization_id, date, api_key, model, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
+  @@unique([organization_id, date, api_key, model, model_group, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
   @@index([date])
   @@index([organization_id, date])
   @@index([api_key])
@@ -831,7 +831,7 @@ model LiteLLM_DailyEndUserSpend {
   failed_requests     BigInt      @default(0)
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
-  @@unique([end_user_id, date, api_key, model, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
+  @@unique([end_user_id, date, api_key, model, model_group, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
   @@index([date])
   @@index([end_user_id, date])
   @@index([api_key])
@@ -865,7 +865,7 @@ model LiteLLM_DailyAgentSpend {
   failed_requests     BigInt      @default(0)
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
-  @@unique([agent_id, date, api_key, model, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
+  @@unique([agent_id, date, api_key, model, model_group, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
   @@index([date])
   @@index([agent_id, date])
   @@index([api_key])
@@ -901,7 +901,7 @@ model LiteLLM_DailyTeamSpend {
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
 
-  @@unique([team_id, date, api_key, model, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
+  @@unique([team_id, date, api_key, model, model_group, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
   @@index([date])
   @@index([team_id, date])
   @@index([api_key])
@@ -937,7 +937,7 @@ model LiteLLM_DailyTagSpend {
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
 
-  @@unique([tag, date, api_key, model, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
+  @@unique([tag, date, api_key, model, model_group, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
   @@index([date])
   @@index([tag, date])
   @@index([api_key])
