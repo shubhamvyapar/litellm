@@ -70,6 +70,7 @@ _SPEND_COLUMNS: Final = (
     "spend",
     "compression_savings_spend",
     "prompt_caching_savings_spend",
+    "gateway_injected_caching_savings_spend",
     "autorouter_savings_spend",
 )
 

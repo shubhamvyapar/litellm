@@ -29,6 +29,8 @@ from models import (
     AnthropicMessagesResponse,
     ChatBody,
     ChatResponse,
+    CostMap,
+    CostMapEntry,
     CountTokensBody,
     CountTokensResponse,
     CredentialCreateBody,
@@ -53,6 +55,7 @@ from models import (
     ModelMode,
     ModelNewBody,
     ModelNewResponse,
+    ModelsListParams,
     ModelsListResponse,
     ModelUpdateBody,
     OcrBody,
@@ -251,6 +254,16 @@ class ProxyClient:
             )
         ).data
 
+    def model_cost_map(self) -> dict[str, CostMapEntry]:
+        return unwrap(
+            self.transport.get(
+                "/public/litellm_model_cost_map",
+                headers=self.transport.master,
+                params=NoBody(),
+                response_type=CostMap,
+            )
+        ).root
+
     def list_files(self, key: str) -> Result[FileListResponse]:
         return self.transport.get(
             "/v1/files",
@@ -324,7 +337,7 @@ class ProxyClient:
             lambda poll_timeout: self.transport.get(
                 "/v1/models",
                 headers=headers,
-                params=NoBody(),
+                params=ModelsListParams(),
                 response_type=ModelsListResponse,
                 timeout=poll_timeout,
             ),

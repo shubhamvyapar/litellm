@@ -20,15 +20,13 @@ from datetime import datetime, timezone
 
 import pytest
 import requests
-
 from e2e_config import CONTROL_PLANE_BASE_URL, FIXTURE_DIR, FIXTURE_MODE_RAW, PROXY_BASE_URL
 from e2e_db import RESET_OPT_IN_ENV, reset_spend_logs, run_spend_log_cleanup
 from fixture_mode import fixture_mode_collection_error, fixture_report_lines
-from provider_edge import replay_leftover_error
 from junit_properties import attach_result_properties
 from lifecycle import ProxyClientProvider, ResourceManager
+from provider_edge import replay_leftover_error
 from proxy_client import ProxyClient, build_proxy_client
-
 
 _E2E_TEST_RAN = pytest.StashKey[bool]()
 _CALL_PASSED = pytest.StashKey[bool]()
@@ -45,11 +43,25 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
+        "replayable: edge-wired test whose provider traffic replays from a fixture bundle, so it makes "
+        "zero provider calls in replay mode; the record/replay CI lane selects it with -m replayable",
+    )
+    config.addinivalue_line(
+        "markers",
         "load: heavy throughput/load test; collected last so it never perturbs latency-sensitive suites",
     )
     config.addinivalue_line(
         "markers",
         "weekly: real-provider anomaly load test that spends real money; deselected unless E2E_WEEKLY_ANOMALY is set",
+    )
+    config.addinivalue_line(
+        "markers",
+        "managed_files: needs a proxy running with require_managed_files enabled; deselected unless E2E_MANAGED_FILES_STACK is set",
+    )
+    config.addinivalue_line(
+        "markers",
+        "redis_chaos: load test that pauses the proxy's Redis outright mid-run; needs a proxy booted from "
+        "gateway/redis_chaos_ci_config.yml on the same host, and is deselected unless E2E_REDIS_CHAOS is set",
     )
 
 

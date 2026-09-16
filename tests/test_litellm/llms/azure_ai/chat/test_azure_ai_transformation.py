@@ -31,6 +31,46 @@ async def test_get_openai_compatible_provider_info():
     assert custom_llm_provider == "azure"
 
 
+@pytest.mark.parametrize(
+    "model, api_base, expected_provider",
+    [
+        ("azure_ai/gpt-4o", "https://my-resource.services.ai.azure.com", "azure_ai"),
+        ("azure_ai/gpt-4o", "https://my-resource.services.ai.azure.com/models", "azure_ai"),
+        ("azure_ai/gpt-5.4-nano", "https://my-resource.services.ai.azure.com", "azure_ai"),
+        ("azure_ai/gpt-4o", "https://my-resource.openai.azure.com", "azure"),
+        (
+            "azure_ai/gpt-4o",
+            "https://my-resource.services.ai.azure.com/openai/deployments/gpt-4o/chat/completions"
+            "?api-version=2024-08-01-preview",
+            "azure",
+        ),
+        ("azure_ai/mistral-large-latest", "https://my-resource.services.ai.azure.com", "azure_ai"),
+        ("azure_ai/mistral-large-latest", "https://my-resource.openai.azure.com", "azure_ai"),
+    ],
+)
+def test_foundry_base_keeps_azure_ai_provider(model: str, api_base: str, expected_provider: str):
+    """Regression for #38276: a Foundry .services.ai.azure.com base must not be reclassified as azure."""
+    config = AzureAIStudioConfig()
+    (
+        _,
+        _,
+        custom_llm_provider,
+    ) = config._get_openai_compatible_provider_info(
+        model=model,
+        api_base=api_base,
+        api_key="my-key",
+        custom_llm_provider="azure_ai",
+    )
+    assert custom_llm_provider == expected_provider
+
+
+def test_is_azure_openai_model_without_api_base_keeps_azure_ai():
+    """Metadata lookups (get_model_info, supports_* checks) carry no api_base and must not flip the provider."""
+    config = AzureAIStudioConfig()
+    assert config._is_azure_openai_model(model="azure_ai/gpt-4o", api_base=None) is False
+    assert config._is_azure_openai_model(model="azure_ai/gpt-4o", api_base="https://my-res.openai.azure.com") is True
+
+
 def test_azure_ai_validate_environment():
     config = AzureAIStudioConfig()
     headers = config.validate_environment(
@@ -201,6 +241,90 @@ def test_azure_model_router_response_shows_actual_model():
     )
 
 
+def test_azure_model_router_stamps_selected_model_on_hidden_params():
+    """
+    The selected model must be stamped on _hidden_params, not left for downstream code to
+    re-derive by looking for "model-router" in the model string. Deployments whose alias
+    does not contain that text are invisible to the string check.
+    """
+    from httpx import Response
+
+    from litellm.llms.azure_ai.common_utils import (
+        AZURE_MODEL_ROUTER_SELECTED_MODEL_KEY,
+        AzureFoundryModelInfo,
+    )
+    from litellm.llms.base_llm.chat.transformation import LiteLLMLoggingObj
+    from litellm.types.utils import ModelResponse
+
+    raw_response_json = {
+        "id": "chatcmpl-test456",
+        "object": "chat.completion",
+        "created": 1234567890,
+        "model": "grok-4-1-fast-reasoning",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "pong"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+    mock_response = MagicMock(spec=Response)
+    mock_response.json.return_value = raw_response_json
+    mock_response.text = json.dumps(raw_response_json)
+    mock_response.headers = {}
+
+    logging_obj = MagicMock(spec=LiteLLMLoggingObj)
+    logging_obj.post_call = MagicMock()
+    logging_obj.model_call_details = {}
+
+    result = AzureModelRouterConfig().transform_response(
+        model="smart-pick",
+        raw_response=mock_response,
+        model_response=ModelResponse(),
+        logging_obj=logging_obj,
+        request_data={},
+        messages=[{"role": "user", "content": "Reply with just pong"}],
+        optional_params={},
+        litellm_params={"model": "azure_ai/model_router/smart-pick"},
+        encoding=None,
+        api_key="test-key",
+        json_mode=False,
+    )
+
+    assert result._hidden_params[AZURE_MODEL_ROUTER_SELECTED_MODEL_KEY] == result.model
+    assert (
+        result._hidden_params[AZURE_MODEL_ROUTER_SELECTED_MODEL_KEY]
+        == "azure_ai/grok-4-1-fast-reasoning"
+    )
+    assert AzureFoundryModelInfo.get_model_router_selected_model(
+        result._hidden_params
+    ) == ("azure_ai/grok-4-1-fast-reasoning")
+    assert (
+        AzureFoundryModelInfo.is_model_router_call(
+            model="smart-pick", hidden_params=result._hidden_params
+        )
+        is True
+    )
+
+
+def test_azure_model_router_stamp_does_not_leak_across_responses():
+    """
+    ModelResponse declares _hidden_params as a class-level dict, so the stamp has to be written
+    as a fresh dict. Mutating in place would bleed the selected model into unrelated responses.
+    """
+    from litellm.llms.azure_ai.common_utils import (
+        AZURE_MODEL_ROUTER_SELECTED_MODEL_KEY,
+    )
+    from litellm.types.utils import ModelResponse
+
+    untouched = ModelResponse()
+
+    assert AZURE_MODEL_ROUTER_SELECTED_MODEL_KEY not in (untouched._hidden_params or {})
+
+
 def test_drop_tool_level_extra_fields_strips_copilot_mcp_server_name():
     """
     Regression test: Azure AI returns 400 when tools contain copilot_mcp_server_name.
@@ -300,6 +424,7 @@ def test_azure_ai_strips_non_openai_spec_message_fields():
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
+            "reasoning_content": "The user wants me to read a file.",
             "provider_specific_fields": {"thought_signature": "sig-top"},
             "tool_calls": [
                 {
@@ -327,6 +452,7 @@ def test_azure_ai_strips_non_openai_spec_message_fields():
     transformed_messages = request["messages"]
 
     assert not _find_key_anywhere(transformed_messages, "thinking_blocks")
+    assert not _find_key_anywhere(transformed_messages, "reasoning_content")
     assert not _find_key_anywhere(transformed_messages, "provider_specific_fields")
     assert not _find_key_anywhere(transformed_messages, "cache_control")
 

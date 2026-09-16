@@ -39,6 +39,7 @@ class ExporterOwner(str, Enum):
     WEAVE_OTEL = "weave_otel"
     LEVO = "levo"
     AGENTOPS = "agentops"
+    NEWRELIC = "newrelic"
 
 
 class _OTelV2Flag(BaseSettings):
@@ -95,6 +96,15 @@ class ExporterSpec(BaseModel):
         description=(
             "Force SimpleSpanProcessor regardless of exporter kind. Default: "
             "auto (Simple for console/in_memory, Batch otherwise)."
+        ),
+    )
+    requires_headers: bool = Field(
+        default=False,
+        description=(
+            "Skip this exporter when no headers are resolved. For destinations "
+            "that reject unauthenticated exports (e.g. New Relic), a spec kept "
+            "only as the per-request credential-stamping target would otherwise "
+            "export keyless traffic and produce a 4xx for every span batch."
         ),
     )
 
@@ -243,7 +253,9 @@ class OpenTelemetryV2Config(BaseSettings):
         if self.endpoint and self.exporter == "console":
             self.exporter = "otlp_http"
         # When no explicit destinations are given, fold the single-destination
-        # shorthand into one spec so the provider always has a destination.
+        # shorthand into one spec so the provider always has a destination. A spec
+        # with no fields set is how the presets tell "nothing configured" from an
+        # operator who asked for the console by name.
         if not self.exporters:
             self.exporters = [
                 ExporterSpec(
@@ -251,6 +263,8 @@ class OpenTelemetryV2Config(BaseSettings):
                     endpoint=self.endpoint,
                     headers=self.headers,
                 )
+                if not self.model_fields_set.isdisjoint(("exporter", "endpoint", "headers"))
+                else ExporterSpec()
             ]
         # Ensure ``genai`` is always present and first.
         names = list(self.mapper_names)
