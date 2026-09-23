@@ -167,6 +167,14 @@ export const prepareModelAddRequest = async (formValues: Record<string, any>, ac
           continue;
         }
 
+        // Handle the deployment budget limit (litellm/router_strategy/budget_limiter.py)
+        else if (key === "max_budget") {
+          if (value !== undefined && value !== null && value !== "") {
+            litellmParamsObj[key] = Number(value);
+          }
+          continue;
+        }
+
         // Handle the PTU flat-cost fields (attributed to the team via model_info)
         else if (key === "ptu_count" || key === "cost_per_ptu_per_hour") {
           if (value !== undefined && value !== null && value !== "") {

@@ -19,6 +19,7 @@ import CacheControlInjectionPoints, {
   NEW_CACHE_CONTROL_POINT,
 } from "./cache_control_settings";
 import VectorStoreSelector from "../vector_store_management/VectorStoreSelector";
+import BudgetDurationDropdown from "../common_components/budget_duration_dropdown";
 import { Tag } from "../tag_management/types";
 import { formItemValidateJSON } from "../../utils/textUtils";
 import {
@@ -194,6 +195,37 @@ const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                     description: tag.description || undefined,
                   }))}
                   allowCustomValues
+                />
+              )}
+            </MountedFormField>
+
+            <MountedFormField
+              name="max_budget"
+              label={labelWithHint(
+                "Max Budget (USD)",
+                "Caps spend on this deployment. Once reached, LiteLLM stops routing requests to it until the budget duration resets. Applies to every key/user calling this model.",
+              )}
+              rules={{ validate: validatorRules({ validator: validateNumber }) }}
+              className="mb-4"
+            >
+              {(control) => (
+                <Input
+                  id={control.id}
+                  value={(control.value as string | undefined) ?? ""}
+                  onChange={control.onChange}
+                  onBlur={control.onBlur}
+                  placeholder="e.g. 100"
+                />
+              )}
+            </MountedFormField>
+
+            <MountedFormField name="budget_duration" label="Budget Duration" className="mb-4">
+              {(control) => (
+                <BudgetDurationDropdown
+                  id={control.id}
+                  value={control.value as string | undefined}
+                  onChange={control.onChange}
+                  placeholder="Select a budget reset period"
                 />
               )}
             </MountedFormField>

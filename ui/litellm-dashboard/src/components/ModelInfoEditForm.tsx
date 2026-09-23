@@ -24,6 +24,7 @@ import CacheControlInjectionPoints, {
   CACHE_CONTROL_TOOLTIP,
   type CacheControlInjectionPoint,
 } from "./add_model/cache_control_settings";
+import BudgetDurationDropdown from "./common_components/budget_duration_dropdown";
 import type { CredentialItem } from "./networking";
 import NumericalInput from "./shared/numerical_input";
 import type { Tag } from "./tag_management/types";
@@ -93,6 +94,8 @@ export interface ModelEditFormValues {
   cost_per_ptu_per_hour?: string | number | null;
   ptu_effective_from?: Dayjs | null;
   ptu_effective_to?: Dayjs | null;
+  max_budget?: string | number | null;
+  budget_duration?: string | null;
   cache_control?: boolean;
   cache_control_injection_points?: CacheControlInjectionPoint[];
   model_access_group?: string[];
@@ -129,6 +132,8 @@ const modelEditShape = {
   cost_per_ptu_per_hour: scalar,
   ptu_effective_from: z.custom<Dayjs | null>().nullish(),
   ptu_effective_to: z.custom<Dayjs | null>().nullish(),
+  max_budget: scalar,
+  budget_duration: z.string().nullish(),
   cache_control: z.boolean().optional(),
   cache_control_injection_points: z.array(z.custom<CacheControlInjectionPoint>()).optional(),
   model_access_group: z.array(z.string()).optional(),
@@ -228,6 +233,8 @@ export const toModelEditFormValues = (localModelData: any, isWildcardModel: bool
   cost_per_ptu_per_hour: localModelData.model_info?.cost_per_ptu_per_hour ?? null,
   ptu_effective_from: utcIsoToPickerValue(localModelData.model_info?.ptu_effective_from),
   ptu_effective_to: utcIsoToPickerValue(localModelData.model_info?.ptu_effective_to),
+  max_budget: localModelData.litellm_params?.max_budget,
+  budget_duration: localModelData.litellm_params?.budget_duration,
   cache_read_cost: perMillionTokens(
     localModelData.litellm_params?.cache_read_input_token_cost,
     localModelData.model_info?.cache_read_input_token_cost,
@@ -540,6 +547,25 @@ const ModelInfoEditForm: React.FC<ModelInfoEditFormProps> = ({
               "Enter stream timeout",
               localModelData.litellm_params?.stream_timeout,
             )}
+
+            {numberField("max_budget", "Max Budget (USD)", "Enter max budget", localModelData.litellm_params?.max_budget)}
+            <div>
+              <FieldLabel htmlFor="budget_duration">Budget Duration</FieldLabel>
+              {isEditing ? (
+                <FormField control={form.control} name="budget_duration">
+                  {({ id, value, onChange }) => (
+                    <BudgetDurationDropdown
+                      id={id}
+                      value={value as string | undefined}
+                      onChange={onChange}
+                      placeholder="Select a budget reset period"
+                    />
+                  )}
+                </FormField>
+              ) : (
+                <Display>{localModelData.litellm_params?.budget_duration || "Not Set"}</Display>
+              )}
+            </div>
 
             <div>
               <FieldLabel>Model Access Groups</FieldLabel>

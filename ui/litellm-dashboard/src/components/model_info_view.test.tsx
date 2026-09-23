@@ -1636,6 +1636,23 @@ describe("ModelInfoView", () => {
       expect(payload.model_info.health_check_model).toBe("openai/gpt-4o");
     });
 
+    it("routes the deployment budget fields into litellm_params", async () => {
+      const user = userEvent.setup();
+      await enterEditMode(user);
+
+      await user.type(screen.getByPlaceholderText("Enter max budget"), "100");
+      await user.click(screen.getByText("Select a budget reset period"));
+      await user.click(await screen.findByText("monthly"));
+      await screen.findByText("monthly", { selector: '[data-slot="select-value"]' });
+
+      const payload = await save(user);
+
+      expect(payload.litellm_params).toMatchObject({
+        max_budget: "100",
+        budget_duration: "30d",
+      });
+    });
+
     it("keeps a pricing field in the payload after the operator types a value and restores the original", async () => {
       // antd marks a field touched on change and never clears it, so retyping the seeded value
       // still ships the key. RHF's dirtyFields resets on a value returning to its default, which

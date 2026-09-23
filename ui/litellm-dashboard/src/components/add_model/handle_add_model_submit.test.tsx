@@ -78,6 +78,46 @@ describe("prepareModelAddRequest", () => {
     expect(deployment.litellmParamsObj.timeout).toBe(5);
   });
 
+  it("converts max_budget to a number and passes budget_duration through as-is", async () => {
+    const formValues = {
+      model_mappings: [
+        {
+          public_name: "Public Model",
+          litellm_model: "litellm/public",
+        },
+      ],
+      model_name: "custom-model-name",
+      max_budget: "100",
+      budget_duration: "30d",
+    };
+
+    const deployments = await prepareModelAddRequest({ ...formValues }, "token", null);
+
+    expect(deployments).toHaveLength(1);
+    const [deployment] = deployments!;
+    expect(deployment.litellmParamsObj.max_budget).toBe(100);
+    expect(deployment.litellmParamsObj.budget_duration).toBe("30d");
+  });
+
+  it("omits max_budget when left blank", async () => {
+    const formValues = {
+      model_mappings: [
+        {
+          public_name: "Public Model",
+          litellm_model: "litellm/public",
+        },
+      ],
+      model_name: "custom-model-name",
+      max_budget: "",
+    };
+
+    const deployments = await prepareModelAddRequest({ ...formValues }, "token", null);
+
+    expect(deployments).toHaveLength(1);
+    const [deployment] = deployments!;
+    expect(deployment.litellmParamsObj.max_budget).toBeUndefined();
+  });
+
   it("keeps litellm_credential_name from LiteLLM Params JSON when no credential is selected", async () => {
     const formValues = {
       model_mappings: [
