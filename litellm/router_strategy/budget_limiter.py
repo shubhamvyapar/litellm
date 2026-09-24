@@ -587,7 +587,7 @@ class RouterBudgetLimiting(CustomLogger):
                     max_budget=max_budget,
                     budget_duration=budget_duration,
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # alerting is best-effort and must never break spend tracking
             verbose_router_logger.error("Error sending deployment budget threshold alert: %s", e)
 
     async def _send_deployment_budget_alert(
@@ -601,8 +601,8 @@ class RouterBudgetLimiting(CustomLogger):
     ) -> None:
         try:
             from litellm.proxy.proxy_server import proxy_logging_obj
-        except Exception:
-            return  # not running under the proxy - no Slack alerting configured
+        except Exception:  # noqa: BLE001  # proxy module unavailable outside the proxy (pure SDK/Router usage)
+            return
 
         slack_alerting_instance: Final = proxy_logging_obj.slack_alerting_instance
         alert_type_enabled: Final = AlertType.deployment_budget_alerts in slack_alerting_instance.alert_types
