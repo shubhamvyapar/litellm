@@ -23,7 +23,8 @@ import builtins
 import logging
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Any, Final
+from types import MappingProxyType
+from typing import Any, Final, Literal
 
 import litellm
 from litellm._logging import verbose_router_logger
@@ -38,12 +39,22 @@ from litellm.router_strategy.tag_based_routing import _get_tags_from_request_kwa
 from litellm.router_utils.cooldown_callbacks import (
     _get_prometheus_logger_from_callbacks,
 )
+from litellm.types.integrations.slack_alerting import AlertType
 from litellm.types.llms.openai import AllMessageValues
 from litellm.types.router import DeploymentTypedDict, LiteLLM_Params, RouterErrors
 from litellm.types.utils import BudgetConfig, GenericBudgetConfigType, StandardLoggingPayload
 from litellm.types.utils import BudgetConfig as GenericBudgetInfo
 
 DEFAULT_REDIS_SYNC_INTERVAL: Final = 1
+DEPLOYMENT_BUDGET_ALERT_THRESHOLDS: Final[tuple[float, ...]] = (0.5, 0.75, 0.9, 0.99)
+DEPLOYMENT_BUDGET_ALERT_LEVELS: Final[Mapping[float, Literal["Low", "Medium", "High"]]] = MappingProxyType(
+    {
+        0.5: "Low",
+        0.75: "Low",
+        0.9: "Medium",
+        0.99: "High",
+    }
+)
 
 
 class _LiteLLMParamsDictView:
@@ -383,7 +394,7 @@ class RouterBudgetLimiting(CustomLogger):
         await self.dual_cache.async_set_cache(key=start_time_key, value=current_time, ttl=ttl_seconds)
         return current_time
 
-    async def _increment_spend_in_current_window(self, spend_key: str, response_cost: float, ttl: int):
+    async def _increment_spend_in_current_window(self, spend_key: str, response_cost: float, ttl: int) -> float:
         """
         Increment spend within existing budget window
 
@@ -391,8 +402,10 @@ class RouterBudgetLimiting(CustomLogger):
 
         - Increments the spend in memory cache (so spend instantly updated in memory)
         - Queues the increment operation to Redis Pipeline (using batched pipeline to optimize performance. Using Redis for multi instance environment of LiteLLM)
+
+        Returns the new spend total (as tracked by the in-memory cache on this instance).
         """
-        await self.dual_cache.in_memory_cache.async_increment(
+        new_spend: Final = await self.dual_cache.in_memory_cache.async_increment(
             key=spend_key,
             value=response_cost,
             ttl=ttl,
@@ -403,6 +416,7 @@ class RouterBudgetLimiting(CustomLogger):
             ttl=ttl,
         )
         self.redis_increment_operation_queue.append(increment_op)
+        return new_spend
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         """Original method now uses helper functions"""
@@ -437,12 +451,23 @@ class RouterBudgetLimiting(CustomLogger):
             # increment spend for specific deployment id
             deployment_spend_key: Final = f"deployment_spend:{model_id}:{deployment_budget_config.budget_duration}"
             deployment_start_time_key: Final = f"deployment_budget_start_time:{model_id}"
-            await self._increment_spend_for_key(
+            deployment_spend_result: Final = await self._increment_spend_for_key(
                 budget_config=deployment_budget_config,
                 spend_key=deployment_spend_key,
                 start_time_key=deployment_start_time_key,
                 response_cost=response_cost,
             )
+            if deployment_spend_result is not None:
+                new_deployment_spend, deployment_budget_start = deployment_spend_result
+                asyncio.create_task(
+                    self._maybe_alert_deployment_budget_threshold(
+                        model_id=model_id,
+                        model_name=str(standard_logging_payload.get("model", "")),
+                        budget_config=deployment_budget_config,
+                        new_spend=new_deployment_spend,
+                        budget_start=deployment_budget_start,
+                    )
+                )
 
         request_tags: Final = _get_tags_from_request_kwargs(
             kwargs,
@@ -467,9 +492,13 @@ class RouterBudgetLimiting(CustomLogger):
         spend_key: str,
         start_time_key: str,
         response_cost: float,
-    ):
+    ) -> tuple[float, float] | None:
+        """
+        Returns a (new_spend, budget_start) tuple for the window this spend was recorded in, or None
+        if the budget config has no duration (nothing was recorded).
+        """
         if budget_config.budget_duration is None:
-            return
+            return None
 
         current_time: Final = datetime.now(timezone.utc).timestamp()
         ttl_seconds: Final = duration_in_seconds(budget_config.budget_duration)
@@ -489,6 +518,7 @@ class RouterBudgetLimiting(CustomLogger):
                 response_cost=response_cost,
                 ttl_seconds=ttl_seconds,
             )
+            new_spend = response_cost
         elif (current_time - budget_start) > ttl_seconds:
             # Budget window expired - reset everything
             verbose_router_logger.debug("Budget window expired - resetting everything")
@@ -499,16 +529,97 @@ class RouterBudgetLimiting(CustomLogger):
                 response_cost=response_cost,
                 ttl_seconds=ttl_seconds,
             )
+            new_spend = response_cost
         else:
             # Within existing window - increment spend
             remaining_time: Final = ttl_seconds - (current_time - budget_start)
             ttl_for_increment: Final = int(remaining_time)
 
-            await self._increment_spend_in_current_window(
+            new_spend = await self._increment_spend_in_current_window(
                 spend_key=spend_key, response_cost=response_cost, ttl=ttl_for_increment
             )
 
         verbose_router_logger.debug("Incremented spend for %s by %s", spend_key, response_cost)
+        return new_spend, budget_start
+
+    async def _maybe_alert_deployment_budget_threshold(
+        self,
+        model_id: str,
+        model_name: str,
+        budget_config: GenericBudgetInfo,
+        new_spend: float,
+        budget_start: float,
+    ) -> None:
+        """
+        Sends a Slack alert the first time a deployment's spend crosses each of
+        DEPLOYMENT_BUDGET_ALERT_THRESHOLDS within its current budget window.
+
+        Best-effort: alerting must never break spend tracking, so all errors are swallowed and logged.
+        """
+        try:
+            max_budget: Final = budget_config.max_budget
+            budget_duration: Final = budget_config.budget_duration
+            if not max_budget or max_budget <= 0 or budget_duration is None:
+                return
+
+            percent_used: Final = new_spend / max_budget
+            ttl_seconds: Final = duration_in_seconds(budget_duration)
+
+            for threshold in DEPLOYMENT_BUDGET_ALERT_THRESHOLDS:
+                if percent_used < threshold:
+                    continue
+
+                alert_sent_key = f"deployment_budget_alert_sent:{model_id}:{int(budget_start)}:{int(threshold * 100)}"
+                if await self.dual_cache.async_get_cache(alert_sent_key):
+                    continue
+
+                remaining_ttl = max(
+                    1,
+                    int(ttl_seconds - (datetime.now(timezone.utc).timestamp() - budget_start)),
+                )
+                await self.dual_cache.async_set_cache(key=alert_sent_key, value=True, ttl=remaining_ttl)
+
+                await self._send_deployment_budget_alert(
+                    model_id=model_id,
+                    model_name=model_name,
+                    threshold=threshold,
+                    new_spend=new_spend,
+                    max_budget=max_budget,
+                    budget_duration=budget_duration,
+                )
+        except Exception as e:  # noqa: BLE001  # alerting is best-effort and must never break spend tracking
+            verbose_router_logger.error("Error sending deployment budget threshold alert: %s", e)
+
+    async def _send_deployment_budget_alert(
+        self,
+        model_id: str,
+        model_name: str,
+        threshold: float,
+        new_spend: float,
+        max_budget: float,
+        budget_duration: str,
+    ) -> None:
+        try:
+            from litellm.proxy.proxy_server import proxy_logging_obj
+        except Exception:  # noqa: BLE001  # proxy module unavailable outside the proxy (pure SDK/Router usage)
+            return
+
+        slack_alerting_instance: Final = proxy_logging_obj.slack_alerting_instance
+        alert_type_enabled: Final = AlertType.deployment_budget_alerts in slack_alerting_instance.alert_types
+        if not proxy_logging_obj.alerting or not alert_type_enabled:
+            return
+
+        message: Final = (
+            f"Deployment budget alert: `{model_name}` (model_id=`{model_id}`) has used "
+            f"{threshold:.0%} of its ${max_budget:g} budget (${new_spend:.2f}/${max_budget:g}) "
+            f"for this {budget_duration} window."
+        )
+        await slack_alerting_instance.send_alert(
+            message=message,
+            level=DEPLOYMENT_BUDGET_ALERT_LEVELS[threshold],
+            alert_type=AlertType.deployment_budget_alerts,
+            alerting_metadata={},
+        )
 
     async def periodic_sync_in_memory_spend_with_redis(self):
         """

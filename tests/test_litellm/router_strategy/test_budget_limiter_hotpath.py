@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import logging
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -396,3 +397,167 @@ async def test_push_task_failure_is_logged_once_and_not_leaked(disable_budget_sy
         "Error syncing in-memory cache with Redis: Error 61 connecting to 127.0.0.1:6379"
     ]
     unretrieved.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_alert_deployment_budget_threshold_fires_once_per_bucket(
+    disable_budget_sync,
+):
+    """
+    A deployment's spend crossing 50/75/90/99% of its budget should alert exactly
+    once per threshold per budget window, even if checked repeatedly at the same spend.
+    """
+    provider_budget = RouterBudgetLimiting(
+        dual_cache=DualCache(), provider_budget_config={}
+    )
+    budget_config = BudgetConfig(budget_duration="1d", max_budget=10.0)
+
+    sent_thresholds = []
+
+    async def fake_send(**kwargs):
+        sent_thresholds.append(kwargs["threshold"])
+
+    provider_budget._send_deployment_budget_alert = fake_send
+    window_start = time.time()
+
+    # 60% used -> crosses the 50% bucket only
+    await provider_budget._maybe_alert_deployment_budget_threshold(
+        model_id="dep-1",
+        model_name="gpt-4o",
+        budget_config=budget_config,
+        new_spend=6.0,
+        budget_start=window_start,
+    )
+    assert sent_thresholds == [0.5]
+
+    # Same spend checked again (e.g. next request in the window) -> no repeat alert
+    await provider_budget._maybe_alert_deployment_budget_threshold(
+        model_id="dep-1",
+        model_name="gpt-4o",
+        budget_config=budget_config,
+        new_spend=6.0,
+        budget_start=window_start,
+    )
+    assert sent_thresholds == [0.5]
+
+    # Spend jumps to 95% -> crosses 75% and 90% (50% already alerted, so not repeated)
+    await provider_budget._maybe_alert_deployment_budget_threshold(
+        model_id="dep-1",
+        model_name="gpt-4o",
+        budget_config=budget_config,
+        new_spend=9.5,
+        budget_start=window_start,
+    )
+    assert sorted(sent_thresholds[1:]) == [0.75, 0.9]
+
+
+@pytest.mark.asyncio
+async def test_maybe_alert_deployment_budget_threshold_noop_below_first_bucket(
+    disable_budget_sync,
+):
+    provider_budget = RouterBudgetLimiting(
+        dual_cache=DualCache(), provider_budget_config={}
+    )
+    budget_config = BudgetConfig(budget_duration="1d", max_budget=10.0)
+
+    sent_thresholds = []
+
+    async def fake_send(**kwargs):
+        sent_thresholds.append(kwargs["threshold"])
+
+    provider_budget._send_deployment_budget_alert = fake_send
+
+    await provider_budget._maybe_alert_deployment_budget_threshold(
+        model_id="dep-1",
+        model_name="gpt-4o",
+        budget_config=budget_config,
+        new_spend=1.0,  # 10% used, below the 50% bucket
+        budget_start=time.time(),
+    )
+    assert sent_thresholds == []
+
+
+@pytest.mark.asyncio
+async def test_send_deployment_budget_alert_is_noop_without_slack_alerting_configured(
+    disable_budget_sync,
+):
+    """
+    Alerting is best-effort: when the proxy has no Slack alerting configured (e.g. pure
+    SDK usage, or a proxy started without `general_settings.alerting`), sending an alert
+    must not raise.
+    """
+    provider_budget = RouterBudgetLimiting(
+        dual_cache=DualCache(), provider_budget_config={}
+    )
+
+    await provider_budget._send_deployment_budget_alert(
+        model_id="dep-1",
+        model_name="gpt-4o",
+        threshold=0.5,
+        new_spend=5.0,
+        max_budget=10.0,
+        budget_duration="1d",
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_log_success_event_checks_deployment_budget_threshold(
+    disable_budget_sync, monkeypatch
+):
+    """
+    Regression test: recording spend against a deployment budget must schedule a
+    threshold check with the deployment's new total spend, so Slack alerts actually
+    fire from the request path rather than only from a direct unit call.
+    """
+    provider_budget = RouterBudgetLimiting(
+        dual_cache=DualCache(),
+        provider_budget_config={},
+        model_list=[
+            {
+                "model_name": "gpt-4o",
+                "litellm_params": {
+                    "model": "openai/gpt-4o",
+                    "max_budget": 10.0,
+                    "budget_duration": "1d",
+                },
+                "model_info": {"id": "dep-1"},
+            }
+        ],
+    )
+
+    captured = []
+
+    async def fake_maybe_alert(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setattr(
+        provider_budget, "_maybe_alert_deployment_budget_threshold", fake_maybe_alert
+    )
+
+    created_tasks = []
+    monkeypatch.setattr(asyncio, "create_task", lambda coro: created_tasks.append(coro))
+
+    await provider_budget.async_log_success_event(
+        kwargs={
+            "call_type": "completion",
+            "litellm_params": {"custom_llm_provider": "openai"},
+            "standard_logging_object": {
+                "response_cost": 5.0,
+                "model_id": "dep-1",
+                "model": "gpt-4o",
+            },
+        },
+        response_obj=None,
+        start_time=None,
+        end_time=None,
+    )
+
+    assert len(created_tasks) == 1
+    await created_tasks[0]
+
+    assert len(captured) == 1
+    assert captured[0]["model_id"] == "dep-1"
+    assert captured[0]["model_name"] == "gpt-4o"
+    assert captured[0]["budget_config"] == provider_budget._get_budget_config_for_deployment("dep-1")
+    assert captured[0]["new_spend"] == 5.0
+    assert isinstance(captured[0]["budget_start"], float)

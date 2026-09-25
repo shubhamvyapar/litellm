@@ -328,6 +328,8 @@ export default function ModelInfoView({
         timeout: values.timeout,
         stream_timeout: values.stream_timeout,
         tags: values.tags,
+        max_budget: values.max_budget,
+        budget_duration: values.budget_duration,
       };
 
       if (isFieldTouched("input_cost")) {
