@@ -13,8 +13,8 @@ import {
   formatRangeLabel,
   localIsoDay,
   MAX_POINTS_WITH_DOTS,
+  SAVINGS_CHART_DRIVERS,
   SAVINGS_COLORS,
-  SAVINGS_DRIVERS,
   SAVINGS_SERIES,
   SavingsAccumulation,
   SavingsPoint,
@@ -98,7 +98,7 @@ const UsageTab: React.FC<UsageTabProps> = ({ accessToken, activity }) => {
   // that actually saved are plotted; the range total keeps the signed truth.
   const byDriver = useMemo(
     () =>
-      SAVINGS_DRIVERS.map(({ name, color, of }) => ({
+      SAVINGS_CHART_DRIVERS.map(({ name, color, of }) => ({
         driver: name,
         color,
         usd: sumOverDays(results, of),

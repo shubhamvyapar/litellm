@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import type { DailyData, SpendMetrics } from "@/components/UsagePage/types";
 import type { ToolSpendDailyEntry, ToolSpendEntry } from "@/components/networking";
 import {
+  SAVINGS_CHART_DRIVERS,
   SAVINGS_COLORS,
   SAVINGS_DRIVERS,
   SAVINGS_SERIES,
   buildDailyToolSeries,
   computeCacheLeakage,
   formatRangeLabel,
+  gatewayAttributedCachingOf,
   isAnthropicModel,
   localIsoDay,
   savingsSeriesOf,
@@ -68,9 +70,9 @@ const modelDay = (date: string, models: Record<string, Partial<SpendMetrics>>): 
 });
 
 describe("savingsSeriesOf", () => {
-  it("plots the LiteLLM-injected caching share, sorted oldest first", () => {
-    // Total and injected caching deliberately differ: every chart derives from
-    // SAVINGS_DRIVERS, so the caching series must follow the injected figure.
+  it("splits caching into its LiteLLM-injected and client-attributed shares, sorted oldest first", () => {
+    // Total and injected caching deliberately differ: the client-attributed share is
+    // the remainder, so both series together must still sum to the total.
     const sharedSavings: Partial<SpendMetrics> = {
       compression_savings_spend: 0.1,
       prompt_caching_savings_spend: 0.5,
@@ -83,9 +85,22 @@ describe("savingsSeriesOf", () => {
 
     const series = savingsSeriesOf(newestFirst);
 
+    const expectedFirstDay = {
+      Compression: 0.1,
+      "Prompt caching (LiteLLM)": 0.3,
+      "Prompt caching (client)": 0.2,
+      "Auto-router": 0.05,
+    };
+    const expectedSecondDay = {
+      Compression: 0.1,
+      "Prompt caching (LiteLLM)": 0.2,
+      "Prompt caching (client)": 0.3,
+      "Auto-router": 0.05,
+    };
+
     expect(series.map((p) => p.date)).toEqual(["Jul 1", "Jul 2"]);
-    expect(series[0]).toMatchObject({ Compression: 0.1, "Prompt caching": 0.3, "Auto-router": 0.05 });
-    expect(series[1]).toMatchObject({ Compression: 0.1, "Prompt caching": 0.2, "Auto-router": 0.05 });
+    expect(series[0]).toMatchObject(expectedFirstDay);
+    expect(series[1]).toMatchObject(expectedSecondDay);
   });
 });
 
@@ -310,21 +325,22 @@ describe("toCumulative", () => {
   const point = (date: string, compression: number, caching: number, autorouter: number = 0) => ({
     date,
     Compression: compression,
-    "Prompt caching": caching,
+    "Prompt caching (LiteLLM)": caching,
+    "Prompt caching (client)": 0,
     "Auto-router": autorouter,
   });
 
   it("turns each reading into everything saved up to that point", () => {
     const running = toCumulative([point("Jul 1", 1, 10), point("Jul 2", 2, 20), point("Jul 3", 3, 30)]);
     expect(running.map((p) => p.Compression)).toEqual([1, 3, 6]);
-    expect(running.map((p) => p["Prompt caching"])).toEqual([10, 30, 60]);
+    expect(running.map((p) => p["Prompt caching (LiteLLM)"])).toEqual([10, 30, 60]);
     expect(running.map((p) => p["Auto-router"])).toEqual([0, 0, 0]);
   });
 
   it("accumulates each driver on its own, so one flat series cannot lift the other", () => {
     const running = toCumulative([point("Jul 1", 0, 5), point("Jul 2", 0, 5)]);
     expect(running.map((p) => p.Compression)).toEqual([0, 0]);
-    expect(running.map((p) => p["Prompt caching"])).toEqual([5, 10]);
+    expect(running.map((p) => p["Prompt caching (LiteLLM)"])).toEqual([5, 10]);
     expect(running.map((p) => p["Auto-router"])).toEqual([0, 0]);
   });
 
@@ -349,7 +365,8 @@ describe("withStartAnchor", () => {
   const point = (date: string, compression: number, caching: number, autorouter: number = 0) => ({
     date,
     Compression: compression,
-    "Prompt caching": caching,
+    "Prompt caching (LiteLLM)": caching,
+    "Prompt caching (client)": 0,
     "Auto-router": autorouter,
   });
 
@@ -361,7 +378,7 @@ describe("withStartAnchor", () => {
   it("starts the range at zero without disturbing the running totals that follow", () => {
     const anchored = withStartAnchor([point("Jul 16", 5, 1), point("Jul 17", 9, 4)], "Jul 16");
     expect(anchored.map((p) => p.Compression)).toEqual([0, 5, 9]);
-    expect(anchored.map((p) => p["Prompt caching"])).toEqual([0, 1, 4]);
+    expect(anchored.map((p) => p["Prompt caching (LiteLLM)"])).toEqual([0, 1, 4]);
     expect(anchored.map((p) => p["Auto-router"])).toEqual([0, 0, 0]);
   });
 
@@ -401,27 +418,43 @@ describe("usd", () => {
   });
 });
 
-describe("savings driver colours", () => {
+describe("savings chart driver colours", () => {
   it("keeps a driver's colour when a driver above it is filtered out", () => {
     // Charts colour by position in the data they are given, and the donut is given
     // only drivers that saved something. Compression is zero on any deployment not
     // running the compression guardrail, so the survivors must not slide onto the
     // colours of the drivers dropped above them.
-    const totals = { Compression: 0, "Prompt caching": 4, "Auto-router": 7 } as const;
-    const plotted = SAVINGS_DRIVERS.map(({ name, color }) => ({ name, color, usd: totals[name] })).filter(
+    const totals = {
+      Compression: 0,
+      "Prompt caching (LiteLLM)": 4,
+      "Prompt caching (client)": 0,
+      "Auto-router": 7,
+    } as const;
+    const plotted = SAVINGS_CHART_DRIVERS.map(({ name, color }) => ({ name, color, usd: totals[name] })).filter(
       (d) => d.usd > 0,
     );
 
     expect(plotted.map((d) => [d.name, d.color])).toEqual([
-      ["Prompt caching", "blue"],
+      ["Prompt caching (LiteLLM)", "blue"],
       ["Auto-router", "amber"],
     ]);
   });
 
   it("agrees with the legend, which is built from the unfiltered list", () => {
     const legend = new Map(SAVINGS_SERIES.map((name, i) => [SAVINGS_COLORS[i], name]));
-    for (const { name, color } of SAVINGS_DRIVERS) {
+    for (const { name, color } of SAVINGS_CHART_DRIVERS) {
       expect(legend.get(color)).toBe(name);
     }
+  });
+});
+
+describe("savings driver totals", () => {
+  it("keeps the total-saved tile scoped to LiteLLM's own gateway-injected caching", () => {
+    // The caching tile leads with what LiteLLM's own injection earned, not the total
+    // (which also counts client- and provider-driven caching); the Total-saved tile
+    // reuses that same restriction so a key whose caching came entirely from its own
+    // cache_control does not read as gateway-earned.
+    expect(SAVINGS_DRIVERS.map((d) => d.name)).toEqual(["Compression", "Prompt caching", "Auto-router"]);
+    expect(SAVINGS_DRIVERS.find((d) => d.name === "Prompt caching")?.of).toBe(gatewayAttributedCachingOf);
   });
 });
