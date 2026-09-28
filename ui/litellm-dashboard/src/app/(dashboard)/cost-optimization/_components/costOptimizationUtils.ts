@@ -18,6 +18,9 @@ export const shortDate = (iso: string): string =>
 export const compressionOf = (m: SpendMetrics): number => m.compression_savings_spend ?? 0;
 export const cachingOf = (m: SpendMetrics): number => m.prompt_caching_savings_spend ?? 0;
 export const gatewayAttributedCachingOf = (m: SpendMetrics): number => m.gateway_injected_caching_savings_spend ?? 0;
+// The remainder of cachingOf once the LiteLLM-injected share is pulled out: caching that
+// arrived with its own cache_control or that a provider applies implicitly.
+export const clientAttributedCachingOf = (m: SpendMetrics): number => cachingOf(m) - gatewayAttributedCachingOf(m);
 export const autorouterOf = (m: SpendMetrics): number => m.autorouter_savings_spend ?? 0;
 export const savedTokensOf = (m: SpendMetrics): number => m.compression_saved_tokens ?? 0;
 
@@ -178,12 +181,29 @@ export type SavingsAccumulation = "cumulative" | "per-interval";
 export type SavingsPoint = {
   date: string;
   Compression: number;
-  "Prompt caching": number;
+  "Prompt caching (LiteLLM)": number;
+  "Prompt caching (client)": number;
   "Auto-router": number;
 };
 
 /**
- * The savings drivers, each owning its own colour.
+ * The drivers behind the "Total saved" tile: what LiteLLM itself delivered. Its
+ * caching term is the gateway-injected share only, so a key whose caching came
+ * from its own cache_control or an implicit provider cache does not get credited
+ * to LiteLLM here; that share still shows in the caching tile's own Total figure
+ * and in SAVINGS_CHART_DRIVERS below.
+ */
+export const SAVINGS_DRIVERS = [
+  { name: "Compression", color: "emerald", of: compressionOf },
+  { name: "Prompt caching", color: "blue", of: gatewayAttributedCachingOf },
+  { name: "Auto-router", color: "amber", of: autorouterOf },
+] as const;
+
+/**
+ * The drivers the "Savings" chart, its legend, and the donut plot: the same three
+ * totals, but with prompt caching split by who set up the cache breakpoints. A
+ * key whose caching is entirely client- or provider-driven still shows a rising
+ * line here instead of flatlining at zero, which SAVINGS_DRIVERS alone would do.
  *
  * One list rather than a names list beside a colours list, because the donut is
  * given only the drivers that saved anything and charts assign colours by position
@@ -192,34 +212,35 @@ export type SavingsPoint = {
  * colours of the drivers above them, while the legend still reports the original
  * mapping. Colour travels with the driver so filtering cannot separate them.
  */
-export const SAVINGS_DRIVERS = [
+export const SAVINGS_CHART_DRIVERS = [
   { name: "Compression", color: "emerald", of: compressionOf },
-  { name: "Prompt caching", color: "blue", of: gatewayAttributedCachingOf },
+  { name: "Prompt caching (LiteLLM)", color: "blue", of: gatewayAttributedCachingOf },
+  { name: "Prompt caching (client)", color: "cyan", of: clientAttributedCachingOf },
   { name: "Auto-router", color: "amber", of: autorouterOf },
 ] as const;
 
-export const SAVINGS_SERIES = SAVINGS_DRIVERS.map((d) => d.name);
-export const SAVINGS_COLORS = SAVINGS_DRIVERS.map((d) => d.color);
+export const SAVINGS_SERIES = SAVINGS_CHART_DRIVERS.map((d) => d.name);
+export const SAVINGS_COLORS = SAVINGS_CHART_DRIVERS.map((d) => d.color);
 
-type SavingsDriverName = (typeof SAVINGS_DRIVERS)[number]["name"];
+type SavingsDriverName = (typeof SAVINGS_CHART_DRIVERS)[number]["name"];
 
 export const sumOverDays = (results: readonly DailyData[], of: (m: SpendMetrics) => number): number =>
   results.reduce((sum, d) => sum + of(d.metrics), 0);
 
 /**
- * One point per day, each driver plotting the metric its SAVINGS_DRIVERS entry
- * names. The rollup arrives newest first, so sort on the raw ISO date before
- * shortDate() drops the year and makes the labels unsortable; the running total
- * then accumulates forward in time. Deriving every chart's series and every
- * total from the same driver list is what keeps a tile, a timeline and the
- * donut from quietly plotting different metrics for the same driver name.
+ * One point per day, each driver plotting the metric its SAVINGS_CHART_DRIVERS
+ * entry names. The rollup arrives newest first, so sort on the raw ISO date
+ * before shortDate() drops the year and makes the labels unsortable; the running
+ * total then accumulates forward in time. Deriving every chart's series and the
+ * donut from the same driver list is what keeps a timeline and the donut from
+ * quietly plotting different metrics for the same driver name.
  */
 export const savingsSeriesOf = (results: readonly DailyData[]): SavingsPoint[] =>
   [...results]
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((d) => ({
       date: shortDate(d.date),
-      ...(Object.fromEntries(SAVINGS_DRIVERS.map(({ name, of }) => [name, of(d.metrics)])) as Record<
+      ...(Object.fromEntries(SAVINGS_CHART_DRIVERS.map(({ name, of }) => [name, of(d.metrics)])) as Record<
         SavingsDriverName,
         number
       >), // fromEntries widens keys to string; the entries are exactly the driver names
@@ -238,7 +259,10 @@ export const toCumulative = (points: readonly SavingsPoint[]): SavingsPoint[] =>
       {
         date: point.date,
         Compression: (previous?.Compression ?? 0) + point.Compression,
-        "Prompt caching": (previous?.["Prompt caching"] ?? 0) + point["Prompt caching"],
+        "Prompt caching (LiteLLM)":
+          (previous?.["Prompt caching (LiteLLM)"] ?? 0) + point["Prompt caching (LiteLLM)"],
+        "Prompt caching (client)":
+          (previous?.["Prompt caching (client)"] ?? 0) + point["Prompt caching (client)"],
         "Auto-router": (previous?.["Auto-router"] ?? 0) + point["Auto-router"],
       },
     ];
@@ -254,7 +278,16 @@ export const toCumulative = (points: readonly SavingsPoint[]): SavingsPoint[] =>
 export const withStartAnchor = (cumulative: readonly SavingsPoint[], startLabel: string): SavingsPoint[] =>
   cumulative.length === 0
     ? [...cumulative]
-    : [{ date: startLabel, Compression: 0, "Prompt caching": 0, "Auto-router": 0 }, ...cumulative];
+    : [
+        {
+          date: startLabel,
+          Compression: 0,
+          "Prompt caching (LiteLLM)": 0,
+          "Prompt caching (client)": 0,
+          "Auto-router": 0,
+        },
+        ...cumulative,
+      ];
 
 /** "Jul 16 – Jul 23", collapsing to a single date when the range is one day. */
 export const formatRangeLabel = (from: Date | undefined, to: Date | undefined): string => {

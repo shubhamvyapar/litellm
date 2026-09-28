@@ -16,8 +16,8 @@ import {
 import { DailyData } from "@/components/UsagePage/types";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 
-// The total sums SAVINGS_DRIVERS, so it is by construction the sum of what the
-// charts plot; the donut and timelines derive from the same list in costOptimizationUtils.
+// The total sums SAVINGS_DRIVERS: LiteLLM's own gateway-injected caching, not the
+// fuller SAVINGS_CHART_DRIVERS split the "Savings" chart and donut plot elsewhere.
 const useSavingsTotals = (results: DailyData[]) =>
   useMemo(
     () => ({

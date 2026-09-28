@@ -162,8 +162,16 @@ describe("UsageTab", () => {
   });
 
   const twoDays = () => [
-    day("2026-07-12", { compression_savings_spend: 0.04, gateway_injected_caching_savings_spend: 0.006 }),
-    day("2026-07-13", { compression_savings_spend: 0.1, gateway_injected_caching_savings_spend: 0.01 }),
+    day("2026-07-12", {
+      compression_savings_spend: 0.04,
+      prompt_caching_savings_spend: 0.006,
+      gateway_injected_caching_savings_spend: 0.006,
+    }),
+    day("2026-07-13", {
+      compression_savings_spend: 0.1,
+      prompt_caching_savings_spend: 0.01,
+      gateway_injected_caching_savings_spend: 0.01,
+    }),
   ];
 
   it("opens on a running total anchored at $0 at the start of the range", () => {
@@ -173,25 +181,31 @@ describe("UsageTab", () => {
     // line rises from zero rather than floating; the daily running totals follow.
     const series = readSeries(screen.getByTestId("area-chart"));
     expect(series).toHaveLength(3);
-    expect(series[0]).toMatchObject({ date: "Jul 1", Compression: 0, "Prompt caching": 0 });
-    expect(series[1]).toMatchObject({ Compression: 0.04, "Prompt caching": 0.006 });
+    expect(series[0]).toMatchObject({ date: "Jul 1", Compression: 0, "Prompt caching (LiteLLM)": 0 });
+    expect(series[1]).toMatchObject({ Compression: 0.04, "Prompt caching (LiteLLM)": 0.006 });
     expect(series[2].Compression).toBeCloseTo(0.14, 5);
-    expect(series[2]["Prompt caching"]).toBeCloseTo(0.016, 5);
+    expect(series[2]["Prompt caching (LiteLLM)"]).toBeCloseTo(0.016, 5);
   });
 
   it("rises from $0 to the day's cumulative total for a single-day range", () => {
     // The original complaint: a one-day range plotted a single floating dot. The
     // synthetic start anchor gives the line a zero origin to climb from.
     const oneDay = new Date(2026, 6, 24);
-    renderWith([day("2026-07-24", { compression_savings_spend: 0.2, gateway_injected_caching_savings_spend: 0.05 })], {
-      from: oneDay,
-      to: oneDay,
-    });
+    renderWith(
+      [
+        day("2026-07-24", {
+          compression_savings_spend: 0.2,
+          prompt_caching_savings_spend: 0.05,
+          gateway_injected_caching_savings_spend: 0.05,
+        }),
+      ],
+      { from: oneDay, to: oneDay },
+    );
 
     const series = readSeries(screen.getByTestId("area-chart"));
     expect(series).toHaveLength(2);
-    expect(series[0]).toMatchObject({ date: "Jul 24", Compression: 0, "Prompt caching": 0 });
-    expect(series[1]).toMatchObject({ date: "Jul 24", Compression: 0.2, "Prompt caching": 0.05 });
+    expect(series[0]).toMatchObject({ date: "Jul 24", Compression: 0, "Prompt caching (LiteLLM)": 0 });
+    expect(series[1]).toMatchObject({ date: "Jul 24", Compression: 0.2, "Prompt caching (LiteLLM)": 0.05 });
   });
 
   it("plots the daily series oldest first even though the rollup arrives newest first", async () => {
@@ -199,17 +213,17 @@ describe("UsageTab", () => {
     // still read left to right in time, and the running total must climb toward
     // the newest day, not fall away from it.
     const newestFirst = [
-      day("2026-07-13", { gateway_injected_caching_savings_spend: 0.1 }),
-      day("2026-07-12", { gateway_injected_caching_savings_spend: 0.04 }),
+      day("2026-07-13", { prompt_caching_savings_spend: 0.1, gateway_injected_caching_savings_spend: 0.1 }),
+      day("2026-07-12", { prompt_caching_savings_spend: 0.04, gateway_injected_caching_savings_spend: 0.04 }),
     ];
     renderWith(newestFirst);
 
     // The $0 anchor leads, then the days climb oldest to newest.
     const cumulative = readSeries(screen.getByTestId("area-chart"));
     expect(cumulative.map((p: { date: string }) => p.date)).toEqual(["Jul 1", "Jul 12", "Jul 13"]);
-    expect(cumulative[1]["Prompt caching"]).toBeCloseTo(0.04, 5);
-    expect(cumulative[2]["Prompt caching"]).toBeCloseTo(0.14, 5);
-    expect(cumulative[2]["Prompt caching"]).toBeGreaterThan(cumulative[1]["Prompt caching"]);
+    expect(cumulative[1]["Prompt caching (LiteLLM)"]).toBeCloseTo(0.04, 5);
+    expect(cumulative[2]["Prompt caching (LiteLLM)"]).toBeCloseTo(0.14, 5);
+    expect(cumulative[2]["Prompt caching (LiteLLM)"]).toBeGreaterThan(cumulative[1]["Prompt caching (LiteLLM)"]);
 
     await userEvent.click(screen.getByRole("tab", { name: "Per day" }));
     const perDay = readSeries(screen.getByTestId("bar-chart"));
@@ -229,8 +243,8 @@ describe("UsageTab", () => {
     expect(screen.queryByTestId("area-chart")).not.toBeInTheDocument();
     const series = readSeries(screen.getByTestId("bar-chart"));
     expect(series).toHaveLength(2);
-    expect(series[0]).toMatchObject({ Compression: 0.04, "Prompt caching": 0.006 });
-    expect(series[1]).toMatchObject({ Compression: 0.1, "Prompt caching": 0.01 });
+    expect(series[0]).toMatchObject({ Compression: 0.04, "Prompt caching (LiteLLM)": 0.006 });
+    expect(series[1]).toMatchObject({ Compression: 0.1, "Prompt caching (LiteLLM)": 0.01 });
   });
 
   it("says what the line means and over what range", async () => {
@@ -247,7 +261,7 @@ describe("UsageTab", () => {
     const slices = JSON.parse(screen.getByTestId("donut-chart").getAttribute("data-slices") ?? "[]");
     expect(slices).toEqual([
       { driver: "Compression", color: "emerald", usd: expect.closeTo(0.14, 5) },
-      { driver: "Prompt caching", color: "blue", usd: expect.closeTo(0.016, 5) },
+      { driver: "Prompt caching (LiteLLM)", color: "blue", usd: expect.closeTo(0.016, 5) },
     ]);
   });
 
@@ -262,13 +276,13 @@ describe("UsageTab", () => {
     // Stacking sums the series into one bar. Auto-router savings go negative when a
     // model switch pays for a cold cache, and that segment would be drawn below the
     // axis while the rest of the bar still read as the day's total.
-    renderWith([
-      day("2026-07-12", {
-        compression_savings_spend: 0.1,
-        gateway_injected_caching_savings_spend: 0.02,
-        autorouter_savings_spend: -0.05,
-      }),
-    ]);
+    const dayWithNegativeAutorouter: Partial<SpendMetrics> = {
+      compression_savings_spend: 0.1,
+      prompt_caching_savings_spend: 0.02,
+      gateway_injected_caching_savings_spend: 0.02,
+      autorouter_savings_spend: -0.05,
+    };
+    renderWith([day("2026-07-12", dayWithNegativeAutorouter)]);
 
     await userEvent.click(screen.getByRole("tab", { name: "Per day" }));
     const bars = screen.getByTestId("bar-chart");
@@ -314,35 +328,36 @@ describe("UsageTab", () => {
     // Switching models leaves the new one with a cold cache, so a route can cost more
     // than the baseline would have. A negative slice is meaningless in a donut, but the
     // total has to keep the loss or the page can only ever report good news.
-    renderWith([
-      day("2026-07-12", {
-        compression_savings_spend: 0.1,
-        gateway_injected_caching_savings_spend: 0.02,
-        autorouter_savings_spend: -0.05,
-      }),
-    ]);
+    const dayWithNegativeAutorouter: Partial<SpendMetrics> = {
+      compression_savings_spend: 0.1,
+      prompt_caching_savings_spend: 0.02,
+      gateway_injected_caching_savings_spend: 0.02,
+      autorouter_savings_spend: -0.05,
+    };
+    renderWith([day("2026-07-12", dayWithNegativeAutorouter)]);
 
     expect(screen.getByText("$0.0700")).toBeInTheDocument();
     expect(screen.getByText("-$0.0500")).toBeInTheDocument();
 
     const slices = JSON.parse(screen.getByTestId("donut-chart").getAttribute("data-slices") ?? "[]");
-    expect(slices.map((d: { driver: string }) => d.driver)).toEqual(["Compression", "Prompt caching"]);
+    expect(slices.map((d: { driver: string }) => d.driver)).toEqual(["Compression", "Prompt caching (LiteLLM)"]);
     expect(screen.getByTestId("donut-chart")).toHaveAttribute("data-label", "$0.1200");
   });
 
   it("carries auto-router savings into the summary card, donut slice, and cumulative series", () => {
-    renderWith([
-      day("2026-07-12", {
-        compression_savings_spend: 0.04,
-        gateway_injected_caching_savings_spend: 0.006,
-        autorouter_savings_spend: 0.02,
-      }),
-      day("2026-07-13", {
-        compression_savings_spend: 0.1,
-        gateway_injected_caching_savings_spend: 0.01,
-        autorouter_savings_spend: 0.05,
-      }),
-    ]);
+    const firstDay: Partial<SpendMetrics> = {
+      compression_savings_spend: 0.04,
+      prompt_caching_savings_spend: 0.006,
+      gateway_injected_caching_savings_spend: 0.006,
+      autorouter_savings_spend: 0.02,
+    };
+    const secondDay: Partial<SpendMetrics> = {
+      compression_savings_spend: 0.1,
+      prompt_caching_savings_spend: 0.01,
+      gateway_injected_caching_savings_spend: 0.01,
+      autorouter_savings_spend: 0.05,
+    };
+    renderWith([day("2026-07-12", firstDay), day("2026-07-13", secondDay)]);
 
     // Total saved now sums three drivers, and the auto-router card carries its own total.
     expect(screen.getByText("$0.2260")).toBeInTheDocument();
@@ -352,7 +367,7 @@ describe("UsageTab", () => {
     const slices = JSON.parse(screen.getByTestId("donut-chart").getAttribute("data-slices") ?? "[]");
     expect(slices).toEqual([
       { driver: "Compression", color: "emerald", usd: expect.closeTo(0.14, 5) },
-      { driver: "Prompt caching", color: "blue", usd: expect.closeTo(0.016, 5) },
+      { driver: "Prompt caching (LiteLLM)", color: "blue", usd: expect.closeTo(0.016, 5) },
       { driver: "Auto-router", color: "amber", usd: expect.closeTo(0.07, 5) },
     ]);
 
