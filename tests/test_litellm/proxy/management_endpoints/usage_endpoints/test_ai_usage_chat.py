@@ -12,6 +12,7 @@ from litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat import (
     TOOLS_ADMIN,
     TOOLS_BASE,
     _build_system_prompt,
+    _get_llm_router,
     _summarise_entity_data,
     _summarise_usage_data,
     stream_usage_ai_chat,
@@ -176,6 +177,24 @@ class TestSummariseEntityData:
         assert "No Team usage data" in summary
 
 
+class TestGetLlmRouter:
+    def test_raises_when_router_not_configured(self, monkeypatch):
+        from litellm.proxy import proxy_server
+
+        monkeypatch.setattr(proxy_server, "llm_router", None)
+
+        with pytest.raises(ValueError, match="model_list"):
+            _get_llm_router()
+
+    def test_returns_the_configured_router(self, monkeypatch):
+        from litellm.proxy import proxy_server
+
+        sentinel_router = MagicMock()
+        monkeypatch.setattr(proxy_server, "llm_router", sentinel_router)
+
+        assert _get_llm_router() is sentinel_router
+
+
 class TestStreamUsageAiChat:
     @pytest.mark.asyncio
     async def test_stream_emits_status_events(self):
@@ -213,21 +232,24 @@ class TestStreamUsageAiChat:
             chunk.choices[0].delta.content = "Total spend is $50.25"
             yield chunk
 
+        mock_router = MagicMock()
+        mock_router.acompletion = AsyncMock(
+            side_effect=[
+                mock_first_response,
+                mock_stream(),
+            ]
+        )
+
         with (
             patch(
-                "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat.litellm"
-            ) as mock_litellm,
+                "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat._get_llm_router",
+                return_value=mock_router,
+            ),
             patch(
                 "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat._fetch_usage_data",
                 new_callable=AsyncMock,
             ) as mock_fetch,
         ):
-            mock_litellm.acompletion = AsyncMock(
-                side_effect=[
-                    mock_first_response,
-                    mock_stream(),
-                ]
-            )
             mock_fetch.return_value = SAMPLE_AGGREGATED_RESPONSE
 
             events = []
@@ -251,6 +273,11 @@ class TestStreamUsageAiChat:
             assert tool_call_events[0]["status"] in ("running", "complete")
             assert len(chunk_events) >= 1
             assert len(done_events) == 1
+            # Regression: the completion must go through the proxy's router (which
+            # resolves a model_list alias into a real provider call), not a bare
+            # litellm.acompletion that ignores the alias and its configured credentials.
+            assert mock_router.acompletion.await_count == 2
+            assert mock_router.acompletion.await_args_list[0].kwargs["model"] == "gpt-4o-mini"
 
     @pytest.mark.asyncio
     async def test_stream_handles_team_tool(self):
@@ -288,21 +315,24 @@ class TestStreamUsageAiChat:
             chunk.choices[0].delta.content = "Engineering is the top team."
             yield chunk
 
+        mock_router = MagicMock()
+        mock_router.acompletion = AsyncMock(
+            side_effect=[
+                mock_first_response,
+                mock_stream(),
+            ]
+        )
+
         with (
             patch(
-                "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat.litellm"
-            ) as mock_litellm,
+                "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat._get_llm_router",
+                return_value=mock_router,
+            ),
             patch(
                 "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat._fetch_team_usage_data",
                 new_callable=AsyncMock,
             ) as mock_fetch,
         ):
-            mock_litellm.acompletion = AsyncMock(
-                side_effect=[
-                    mock_first_response,
-                    mock_stream(),
-                ]
-            )
             mock_fetch.return_value = SAMPLE_TEAM_RESPONSE
 
             events = []
@@ -319,11 +349,13 @@ class TestStreamUsageAiChat:
 
     @pytest.mark.asyncio
     async def test_stream_handles_error(self):
-        with patch(
-            "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat.litellm"
-        ) as mock_litellm:
-            mock_litellm.acompletion = AsyncMock(side_effect=Exception("LLM error"))
+        mock_router = MagicMock()
+        mock_router.acompletion = AsyncMock(side_effect=Exception("LLM error"))
 
+        with patch(
+            "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat._get_llm_router",
+            return_value=mock_router,
+        ):
             events = []
             async for event in stream_usage_ai_chat(
                 messages=[{"role": "user", "content": "test"}],
@@ -332,7 +364,29 @@ class TestStreamUsageAiChat:
 
             error_events = [e for e in events if e["type"] == "error"]
             assert len(error_events) == 1
-            assert "internal error" in error_events[0]["message"].lower()
+            # The real failure reason is surfaced (e.g. an unknown model_name, a missing
+            # deployment) rather than a single generic string that hides what to fix.
+            assert "llm error" in error_events[0]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_stream_surfaces_router_not_configured_error(self, monkeypatch):
+        """
+        Regression: a proxy with no model_list must tell the admin to add a model,
+        not fail with a generic "internal error" that gives no actionable cause.
+        """
+        from litellm.proxy import proxy_server
+
+        monkeypatch.setattr(proxy_server, "llm_router", None)
+
+        events = []
+        async for event in stream_usage_ai_chat(
+            messages=[{"role": "user", "content": "test"}],
+        ):
+            events.append(json.loads(event.replace("data: ", "").strip()))
+
+        error_events = [e for e in events if e["type"] == "error"]
+        assert len(error_events) == 1
+        assert "model_list" in error_events[0]["message"]
 
     @pytest.mark.asyncio
     async def test_non_admin_enforces_user_id(self):
@@ -372,11 +426,19 @@ class TestStreamUsageAiChat:
             yield chunk
 
         mock_fetch = AsyncMock(return_value=SAMPLE_AGGREGATED_RESPONSE)
+        mock_router = MagicMock()
+        mock_router.acompletion = AsyncMock(
+            side_effect=[
+                mock_first_response,
+                mock_stream(),
+            ]
+        )
 
         with (
             patch(
-                "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat.litellm"
-            ) as mock_litellm,
+                "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat._get_llm_router",
+                return_value=mock_router,
+            ),
             patch.dict(
                 "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat.TOOL_HANDLERS",
                 {
@@ -388,13 +450,6 @@ class TestStreamUsageAiChat:
                 },
             ),
         ):
-            mock_litellm.acompletion = AsyncMock(
-                side_effect=[
-                    mock_first_response,
-                    mock_stream(),
-                ]
-            )
-
             events = []
             async for event in stream_usage_ai_chat(
                 messages=[{"role": "user", "content": "Show data"}],
@@ -491,9 +546,12 @@ class TestUsageAiChatKeepalive:
             response.choices[0].message.content = "Total spend is $50.25"
             return response
 
-        with patch(  # test-quality-ok: the stream calls the module-level litellm.acompletion directly; no injection seam
-            "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat.litellm.acompletion",
-            new=AsyncMock(side_effect=slow_acompletion),
+        mock_router = MagicMock()
+        mock_router.acompletion = AsyncMock(side_effect=slow_acompletion)
+
+        with patch(
+            "litellm.proxy.management_endpoints.usage_endpoints.ai_usage_chat._get_llm_router",
+            return_value=mock_router,
         ):
             response = await usage_ai_chat(
                 data=UsageAIChatRequest(messages=[ChatMessage(role="user", content="hi")], model="gpt-4o-mini"),

@@ -6,16 +6,19 @@ usage/spend data by querying the aggregated daily activity endpoints.
 import json
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import date
-from typing import Any, Final, Literal, NamedTuple, Protocol, cast, overload
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol, cast, overload
 
 from typing_extensions import ReadOnly, TypedDict
 
-import litellm
 from litellm._logging import verbose_proxy_logger
 from litellm.constants import DEFAULT_COMPETITOR_DISCOVERY_MODEL
+from litellm.types.llms.openai import AllMessageValues
 from litellm.types.proxy.management_endpoints.common_daily_activity import (
     SpendAnalyticsPaginatedResponse,
 )
+
+if TYPE_CHECKING:
+    from litellm.router import Router
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -442,6 +445,20 @@ def _sse(event: SSEEvent) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
+def _get_llm_router() -> "Router":
+    """Return the proxy's initialized router, raising if none is configured.
+
+    Calls must go through the router rather than litellm.acompletion directly:
+    the router is what resolves a model_list alias (what the model picker
+    offers) into a real provider call with its configured credentials.
+    """
+    from litellm.proxy.proxy_server import llm_router
+
+    if llm_router is None:
+        raise ValueError("AI usage chat requires at least one model configured in the proxy's model_list.")
+    return llm_router
+
+
 def _resolve_fetch_kwargs(
     fn_name: str,
     fn_args: Mapping[str, str],
@@ -534,9 +551,13 @@ async def _stream_final_response(model: str, chat_messages: list[Mapping[str, ob
     """Stream the final LLM response after tool results are appended."""
     yield _sse({"type": "status", "message": "Analyzing results..."})
 
-    response: Final = await litellm.acompletion(
+    router: Final = _get_llm_router()
+    response: Final = await router.acompletion(
         model=model,
-        messages=chat_messages,
+        # chat_messages mixes hand-built dicts and provider SDK model_dump() output,
+        # so it stays declared as the loose Mapping shape everywhere it's built and
+        # passed around; only this boundary needs the router's stricter message type.
+        messages=cast(list[AllMessageValues], chat_messages),
         stream=True,
         temperature=USAGE_AI_TEMPERATURE,
     )
@@ -563,9 +584,10 @@ async def stream_usage_ai_chat(
     try:
         yield _sse({"type": "status", "message": "Thinking..."})
         tools: Final = get_tools_for_role(is_admin)
-        response: Final = await litellm.acompletion(
+        router: Final = _get_llm_router()
+        response: Final = await router.acompletion(
             model=resolved_model,
-            messages=chat_messages,
+            messages=cast(list[AllMessageValues], chat_messages),
             tools=tools,
             temperature=USAGE_AI_TEMPERATURE,
         )
@@ -590,6 +612,10 @@ async def stream_usage_ai_chat(
         yield _sse(
             {
                 "type": "error",
-                "message": "An internal error occurred. Please try again.",
+                # The router's own exceptions (unknown model_name, no healthy deployment,
+                # provider auth failure) are already safe, user-facing text — surfacing them
+                # is what lets an admin fix their model_list instead of guessing at a generic
+                # failure message.
+                "message": str(e) or "An internal error occurred. Please try again.",
             }
         )
