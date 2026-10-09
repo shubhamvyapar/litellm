@@ -3809,11 +3809,14 @@ export interface paths {
         };
         /**
          * List End User
-         * @description [Admin-only] List all available customers
+         * @description [Admin-only] List customers, ordered by customer id.
+         *
+         *     Results are paginated: at most `limit` customers (default 100, max 1000) are returned, starting
+         *     at `offset`. Use `search` to narrow by customer id or alias.
          *
          *     Example curl:
          *     ```
-         *     curl --location --request GET 'http://0.0.0.0:4000/customer/list'         --header 'Authorization: Bearer sk-1234'
+         *     curl --location --request GET 'http://0.0.0.0:4000/customer/list?limit=50&search=acme'         --header 'Authorization: Bearer sk-1234'
          *     ```
          */
         get: operations["list_end_user_customer_list_get"];
@@ -45357,7 +45360,14 @@ export interface operations {
     };
     list_end_user_customer_list_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of customers to return */
+                limit?: number;
+                /** @description Number of customers to skip */
+                offset?: number;
+                /** @description Case-insensitive match against the customer id or alias */
+                search?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;

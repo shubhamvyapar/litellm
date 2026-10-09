@@ -98,9 +98,6 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
   });
 
   const [fetchedTags, setFetchedTags] = useState<FetchedForRange<EntityList[]> | null>(null);
-  // No [] default: an unresolved query must stay undefined so the customer
-  // filter reads as loading rather than as a range with no customers.
-  const { data: customers } = useCustomers();
   const { data: agentsResponse } = useAgents();
   const { data: currentUser } = useCurrentUser();
   const isAdmin = all_admin_roles.includes(userRole || "");
@@ -123,6 +120,11 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
   // the selector never holds a value it no longer offers.
   const usageView: UsageOption =
     selectedUsageView === "organization" && !canViewOrganizationUsage ? "global" : selectedUsageView;
+
+  // Only the customer view needs the customer list, and it is the heaviest call on this page: fetch it
+  // there, not on every page load. No [] default: an unresolved query must stay undefined so the
+  // customer filter reads as loading rather than as a range with no customers.
+  const { data: customers } = useCustomers({ enabled: usageView === "customer" });
 
   const [showCredentialBanner, setShowCredentialBanner] = useState(true);
   const [topKeysLimit, setTopKeysLimit] = useState<number>(5);

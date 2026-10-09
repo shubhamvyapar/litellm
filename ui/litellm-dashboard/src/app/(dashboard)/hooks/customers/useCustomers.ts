@@ -5,14 +5,16 @@ import type { components } from "@/lib/http/schema";
 
 export type EndUser = components["schemas"]["CustomerResponse"];
 
-export const useCustomers = () => {
+export const CUSTOMER_LIST_LIMIT = 1000;
+
+export const useCustomers = ({ enabled = true }: { enabled?: boolean } = {}) => {
   const { accessToken, userRole } = useAuthorized();
   return $api.useQuery(
     "get",
     "/customer/list",
-    {},
+    { params: { query: { limit: CUSTOMER_LIST_LIMIT } } },
     {
-      enabled: Boolean(accessToken) && all_admin_roles.includes(userRole!),
+      enabled: enabled && Boolean(accessToken) && all_admin_roles.includes(userRole!),
       select: (data) => data ?? [],
     },
   );
