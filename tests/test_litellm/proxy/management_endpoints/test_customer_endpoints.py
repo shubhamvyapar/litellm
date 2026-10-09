@@ -850,6 +850,50 @@ def test_char_list_body(mock_prisma_client, mock_user_api_key_auth):
     assert response.json() == [_EXPECTED_CUSTOMER]
 
 
+def test_customer_list_is_bounded_and_ordered_by_default(mock_prisma_client, mock_user_api_key_auth):
+    """The endpoint once loaded every end-user row (>2 GB per call, OOM-killing the proxy):
+    with no query params it must still send a take limit and a stable order to the database."""
+    find_many = AsyncMock(return_value=[_row(_FULL_DB_ROW)])
+    mock_prisma_client.db.litellm_endusertable.find_many = find_many
+    response = client.get("/customer/list", headers={"Authorization": "Bearer k"})
+    assert response.status_code == 200
+    kwargs = find_many.await_args.kwargs
+    assert kwargs["take"] == 100
+    assert kwargs["skip"] == 0
+    assert kwargs["order"] == {"user_id": "asc"}
+    assert kwargs["where"] is None
+
+
+def test_customer_list_passes_limit_offset_and_search(mock_prisma_client, mock_user_api_key_auth):
+    find_many = AsyncMock(return_value=[])
+    mock_prisma_client.db.litellm_endusertable.find_many = find_many
+    response = client.get(
+        "/customer/list",
+        params={"limit": 25, "offset": 50, "search": "acme"},
+        headers={"Authorization": "Bearer k"},
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+    kwargs = find_many.await_args.kwargs
+    assert kwargs["take"] == 25
+    assert kwargs["skip"] == 50
+    assert kwargs["where"] == {
+        "OR": [
+            {"user_id": {"contains": "acme", "mode": "insensitive"}},
+            {"alias": {"contains": "acme", "mode": "insensitive"}},
+        ]
+    }
+
+
+@pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 1001}, {"offset": -1}])
+def test_customer_list_rejects_out_of_range_paging(mock_prisma_client, mock_user_api_key_auth, params):
+    find_many = AsyncMock(return_value=[])
+    mock_prisma_client.db.litellm_endusertable.find_many = find_many
+    response = client.get("/customer/list", params=params, headers={"Authorization": "Bearer k"})
+    assert response.status_code == 422
+    find_many.assert_not_awaited()
+
+
 def test_char_new_body(mock_prisma_client, mock_user_api_key_auth):
     mock_prisma_client.db.litellm_endusertable.create = AsyncMock(return_value=_row(_FULL_DB_ROW))
     response = client.post("/customer/new", json={"user_id": "c1"}, headers={"Authorization": "Bearer k"})

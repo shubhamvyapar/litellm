@@ -68,6 +68,9 @@ if TYPE_CHECKING:
             self,
             where: Mapping[str, object] | None = None,
             include: Mapping[str, bool] | None = None,
+            order: Mapping[str, str] | None = None,
+            take: int | None = None,
+            skip: int | None = None,
         ) -> Sequence[_RowT_co]: ...
 
         async def create(
@@ -101,6 +104,9 @@ def _typed_table(repo: EndUserRepository | BudgetRepository) -> object:
 
 
 router: Final = APIRouter()
+
+CUSTOMER_LIST_DEFAULT_LIMIT: Final = 100
+CUSTOMER_LIST_MAX_LIMIT: Final = 1000
 
 
 async def _evict_end_user_cache_keys(cache_keys: Sequence[str]) -> None:
@@ -819,14 +825,28 @@ async def delete_end_user(
 )
 async def list_end_user(
     http_request: Request,
+    limit: int = fastapi.Query(
+        default=CUSTOMER_LIST_DEFAULT_LIMIT,
+        ge=1,
+        le=CUSTOMER_LIST_MAX_LIMIT,
+        description="Maximum number of customers to return",
+    ),
+    offset: int = fastapi.Query(default=0, ge=0, description="Number of customers to skip"),
+    search: str | None = fastapi.Query(
+        default=None,
+        description="Case-insensitive match against the customer id or alias",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> list[CustomerResponse]:
     """
-    [Admin-only] List all available customers
+    [Admin-only] List customers, ordered by customer id.
+
+    Results are paginated: at most `limit` customers (default 100, max 1000) are returned, starting
+    at `offset`. Use `search` to narrow by customer id or alias.
 
     Example curl:
     ```
-    curl --location --request GET 'http://0.0.0.0:4000/customer/list' \
+    curl --location --request GET 'http://0.0.0.0:4000/customer/list?limit=50&search=acme' \
         --header 'Authorization: Bearer sk-1234'
     ```
 
@@ -849,8 +869,21 @@ async def list_end_user(
                 detail={"error": CommonProxyErrors.db_not_connected_error.value},
             )
 
+        where: dict[str, object] | None = None
+        if search:
+            where = {
+                "OR": [
+                    {"user_id": {"contains": search, "mode": "insensitive"}},
+                    {"alias": {"contains": search, "mode": "insensitive"}},
+                ]
+            }
+
         response: Final = await _typed_table(EndUserRepository(prisma_client)).find_many(
-            include={"litellm_budget_table": True, "object_permission": True}
+            where=where,
+            include={"litellm_budget_table": True, "object_permission": True},
+            order={"user_id": "asc"},
+            take=limit,
+            skip=offset,
         )
 
         return [_to_customer_response(item) for item in response]

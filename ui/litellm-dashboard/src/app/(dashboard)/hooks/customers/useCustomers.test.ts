@@ -1,6 +1,6 @@
 import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useCustomers, type EndUser } from "./useCustomers";
+import { CUSTOMER_LIST_LIMIT, useCustomers, type EndUser } from "./useCustomers";
 
 const useQueryMock = vi.fn();
 vi.mock("@/lib/http/api", () => ({
@@ -30,7 +30,17 @@ describe("useCustomers", () => {
 
   it("queries GET /customer/list with a derived key (no hand-written queryKey)", () => {
     renderHook(() => useCustomers());
-    expect(useQueryMock).toHaveBeenCalledWith("get", "/customer/list", {}, expect.any(Object));
+    expect(useQueryMock).toHaveBeenCalledWith(
+      "get",
+      "/customer/list",
+      { params: { query: { limit: CUSTOMER_LIST_LIMIT } } },
+      expect.any(Object),
+    );
+  });
+
+  it("stays disabled while the caller has not asked for customers", () => {
+    renderHook(() => useCustomers({ enabled: false }));
+    expect(lastCallOptions().enabled).toBe(false);
   });
 
   it("enables the query only for an admin holding an access token", () => {

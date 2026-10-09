@@ -754,6 +754,27 @@ describe("UsagePage", () => {
     });
   });
 
+  it("should only request the customer list once the customer view is selected", async () => {
+    mockUseCustomers.mockClear();
+    mockUseCustomers.mockReturnValue({ data: mockCustomers, isLoading: false, error: null } as any);
+
+    renderWithProviders(<UsagePage {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(mockUserDailyActivityAggregatedCall).toHaveBeenCalled();
+    });
+    expect(mockUseCustomers).toHaveBeenCalledWith({ enabled: false });
+    expect(mockUseCustomers).not.toHaveBeenCalledWith({ enabled: true });
+
+    act(() => {
+      fireEvent.change(screen.getByTestId("usage-view-select"), { target: { value: "customer" } });
+    });
+
+    await waitFor(() => {
+      expect(mockUseCustomers).toHaveBeenCalledWith({ enabled: true });
+    });
+  });
+
   it("should withhold the customer list while it is still loading", async () => {
     mockUseCustomers.mockReturnValue({ data: undefined, isLoading: true, error: null } as any);
 
