@@ -58371,7 +58371,14 @@ export interface operations {
     };
     list_end_user_customer_list_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of customers to return */
+                limit?: number;
+                /** @description Number of customers to skip */
+                offset?: number;
+                /** @description Case-insensitive match against the customer id or alias */
+                search?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
